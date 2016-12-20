@@ -31,3 +31,127 @@
  cd ~/onos
  mvn clean install
  ok clean
+
+2. OpenStack 설치
+2.1 커널 업데이트, ovs, nsh 설치
+ sudo apt-get install software-properties-common
+ sudo add-apt-repository cloud-archive:mitaka
+ sudo apt-get update
+ sudo apt-get install linux-image-generic-lts-wily linux-headers-generic-lts-wily
+ sudo reboot
+ apt-cache policy openvswitch-switch
+ sudo apt-get install openvswitch-switch
+ ./install_ovs_nsh.sh
+ 
+2.2 networking-sfc 설치(서비스 체이닝)
+ sudo mkdir /opt/stack
+ cd /opt/stack/
+ sudo git clone git://git.openstack.org/openstack/networking-sfc.git –b stable/mitaka
+ 
+2.3 devstack 설치
+ git clone https://git.openstack.org/openstack-dev/devstack -b stable/mitaka
+ 
+2.4 local.conf 파일 생성
+
+2.5 devstack 실행
+ ./stack.sh
+ 
+3. ONOS, OpenStack 통합
+3.1 networking-onos 설치
+ git clone https://github.com/openstack/networking-onos.git
+ cd networking-onos
+ sudo python setup.py install
+ 
+3.2 /etc/neutron/plugins/ml2/conf_onos.ini 생성
+ vi conf_onos.ini
+ 
+ [onos]
+ url_path = http://<ONOS Controller IP>:8181/onos/vtn
+ username = karaf 
+ password = karaf
+ 
+3.3 /etc/neutron/plugins/ml2/ml2.conf 파일 수정
+ ···
+ mechanism_drivers = onos_ml2
+ ···
+
+3.4 /opt/stack/neutron/neutron.egg-info/entry_points.txt 파일 수정
+ ···
+ [neutron.ml2.mechanism_drivers]
+ ···
+ onos_ml2 = networking_onos.plugins.ml2.driver:ONOSMechanismDriver
+ ···
+ [neutron.service_plugins]
+ ···
+ onos_router = networking_onos.plugins.l3.driver:ONOSL3Plugin
+ ···
+ 
+3.5 neutron-server 재시작
+ screen -x -r stack
+ q-svc에서 n-cpu까지 재시작
+ 
+3.6 ONOS feature 설치
+ feature:install onos-openflow
+ feature:install onos-openflow-base
+ feature:install onos-ovsdatabase
+ feature:install onos-ovsdb-base
+ feature:install onos-drivers-ovsdb
+ feature:install onos-ovsdb-provider-host
+ feature:install onos-app-vtn-onosfw
+ externalportname-set -n onos_port2
+ 
+3.7 ovs manager 설정
+ sudo ovs-vsctl show
+ sudo ovs-vsctl del-br br-int
+ sudo ovs-vsctl del-br br-tun
+ sudo ovs-vsctl del-br br-ex
+ sudo ovs-vsctl del-manager
+ sudo ovs-vsctl set-manager tcp:<ONOS IP>:6640
+ 
+4. 서비스 체이닝 테스트
+4.1 네트워크 및 라우터 생성
+ source openrc admin
+ neutron net-create sfcNet
+ neutron subnet-create sfcNet 10.1.0.0/24 --name sfcSubNet
+ neutron router-create router2 
+ neutron router-interface-add router2 sfcSubNet
+ neutron router-interface-add router2 public-subnet
+
+4.2 포트 생성
+ neutron port-create --name p1 sfcNet
+ neutron port-create --name p2 sfcNet
+ neutron port-create --name p3 sfcNet
+ neutron port-create --name p4 sfcNet
+ neutron port-create --name p5 sfcNet
+ neutron port-create --name p6 sfcNet
+ 
+ neutron port-update p2 --no-security-groups 
+ neutron port-update p3 --no-security-groups 
+ neutron port-update p4 --no-security-groups 
+ neutron port-update p5 --no-security-groups 
+
+ neutron port-update p2 --port-security-enabled=False
+ neutron port-update p3 --port-security-enabled=False
+ neutron port-update p4 --port-security-enabled=False
+ neutron port-update p5 --port-security-enabled=False
+ 
+4.3 이미지 생성
+ nova boot --image cirros-0.3.4-x86_64-uec --flavor m1.tiny --nic port-id=$(neutron port-list | grep p1 | awk '{print $2}') src
+ nova boot --image cirros-0.3.4-x86_64-uec --flavor m1.tiny --nic port-id=$(neutron port-list | grep p2 | awk '{print $2}') --nic port-id=$(neutron port-list | grep p3 | awk '{print $2}') sf1
+ nova boot --image cirros-0.3.4-x86_64-uec --flavor m1.tiny --nic port-id=$(neutron port-list | grep p4 | awk '{print $2}') --nic port-id=$(neutron port-list | grep p5 | awk '{print $2}') --availability-zone nova:compute sf2
+ nova boot --image cirros-0.3.4-x86_64-uec --flavor m1.tiny --nic port-id=$(neutron port-list | grep p6 | awk '{print $2}') --availability-zone nova:compute dst
+
+4.4 포트 페어 생성
+ neutron port-pair-create pp1 --ingress p2 --egress p3
+ neutron port-pair-create pp2 --ingress p4 --egress p5
+ 
+4.5 포트 페어 그룹 생성
+ neutron port-pair-group-create --port-pair pp1 ppg1
+ neutron port-pair-group-create --port-pair pp2 ppg2
+ 
+4.6 플로우 룰 생성
+ neutron flow-classifier-create --source-ip-prefix 10.1.0.9/24 --destination-ip-prefix 10.1.0.14/24 --logical-source-port p1 fc1
+ 
+4.7 포트 체인 생성
+ neutron port-chain-create --port-pair-group ppg1 --port-pair-group ppg2 --flow-classifier fc1 pc1
+ 
